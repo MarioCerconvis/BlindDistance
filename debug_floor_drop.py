@@ -8,14 +8,17 @@ PURPOSE:
   This script visualizes and logs what the sensor actually reports so we can
   determine the right threshold for void detection.
 
+  Updated for STEREO VISION (two USB webcams) — no longer uses OpenNI/Orbbec.
+
 HOW TO USE:
-  1. Run this script: python debug_floor_drop.py
-  2. Point the camera at flat floor first — note the "Floor Mean" value (~800-1200mm typical)
-  3. Then point it at stairs going down, a ledge, or a hole
-  4. Watch the "VOID RATIO" and "Floor Mean" change
-  5. Press 's' to take a snapshot (saves depth CSV + screenshot)
-  6. Press 'c' to calibrate floor baseline (stores current floor mean as reference)
-  7. Press 'q' to quit
+  1. Run stereo_calibration.py first to generate calibration data
+  2. Run this script: python debug_floor_drop.py
+  3. Point the camera at flat floor first — note the "Floor Mean" value
+  4. Then point it at stairs going down, a ledge, or a hole
+  5. Watch the "VOID RATIO" and "Floor Mean" change
+  6. Press 's' to take a snapshot (saves depth CSV + screenshot)
+  7. Press 'c' to calibrate floor baseline (stores current floor mean as reference)
+  8. Press 'q' to quit
 
 OUTPUT:
   - Live annotated view: green = normal floor, red = possible void, blue = no-data
@@ -25,14 +28,15 @@ OUTPUT:
 
 import cv2
 import numpy as np
-from openni import openni2
 import os
 import time
-import csv
+
+from stereo_camera import StereoCamera
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 PROJECT_PATH = os.path.dirname(os.path.abspath(__file__))
 SNAPSHOT_DIR = os.path.join(PROJECT_PATH, "debug_snapshots")
+CALIBRATION_FILE = os.path.join(PROJECT_PATH, "stereo_calibration_data.xml")
 
 # Grid sampling (matching main.py settings)
 GRID_STEP_Y = 20
@@ -50,15 +54,11 @@ NO_RETURN_THRESHOLD = 0       # sensor returns 0 when nothing is in range
 
 # ─── Initialization ──────────────────────────────────────────────────────────
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
-openni2.initialize(PROJECT_PATH)
-dev = openni2.Device.open_any()
 
-depth_stream = dev.create_depth_stream()
-depth_stream.start()
+cam = StereoCamera(CALIBRATION_FILE, left_id=0, right_id=1)
 
-vm = depth_stream.get_video_mode()
-H, W = vm.resolutionY, vm.resolutionX
-print(f"Depth stream resolution: {W}x{H}")
+H, W = cam.depth_h, cam.depth_w
+print(f"Depth resolution: {W}x{H}")
 
 # Floor region bounds (in pixel rows)
 floor_start_row = int(H * (1.0 - FLOOR_REGION_RATIO))
@@ -232,16 +232,18 @@ def save_snapshot(depth_img, vis_img, analysis):
 
 
 # ─── Main loop ───────────────────────────────────────────────────────────────
-print("\n=== FLOOR DROP DIAGNOSTIC ===")
+print("\n=== FLOOR DROP DIAGNOSTIC (Stereo Vision) ===")
 print("Point camera at flat floor, then at stairs/holes.")
 print("GREEN overlay = normal floor | RED = void suspect | BLUE = no depth return")
 print("Press 'c' to calibrate baseline, 's' for snapshot, 'q' to quit\n")
 
 try:
     while True:
-        frame = depth_stream.read_frame()
-        data = frame.get_buffer_as_uint16()
-        depth_img = np.frombuffer(data, dtype=np.uint16).reshape(H, W)
+        depth_img, color_img = cam.get_frames()
+
+        if depth_img is None:
+            time.sleep(0.01)
+            continue
         
         # Analyze
         analysis = analyze_floor(depth_img)
@@ -281,7 +283,6 @@ try:
 
 finally:
     print("\nShutting down...")
-    depth_stream.stop()
-    openni2.unload()
+    cam.stop()
     cv2.destroyAllWindows()
     print("Done.")

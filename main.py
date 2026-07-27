@@ -1,101 +1,12 @@
 import cv2
 import numpy as np
-from openni import openni2
-import threading
 import os
 import time
 
+from stereo_camera import StereoCamera
 from utils.audio_feedback import AudioFeedback
 from utils.vision import ObstacleDetector
 from data_recorder import DataRecorder
-
-class AstraCamera:
-    def __init__(self, project_path):
-        # 0. Add DLL directory for Python 3.8+ on Windows
-        if os.name == 'nt':
-            os.environ['PATH'] = project_path + os.pathsep + os.path.join(project_path, 'OpenNI2') + os.pathsep + os.environ['PATH']
-            if hasattr(os, 'add_dll_directory'):
-                os.add_dll_directory(project_path)
-                os.add_dll_directory(os.path.join(project_path, 'OpenNI2'))
-            
-        # 1. Initialize SDK and Device
-        openni2.initialize(project_path)
-        self.dev = openni2.Device.open_any()
-        
-        # 2. Create Streams
-        self.depth_stream = self.dev.create_depth_stream()
-        self.color_stream = self.dev.create_color_stream()
-        
-        # START STREAMS FIRST
-        self.depth_stream.start()
-        self.color_stream.start()
-
-        # Read resolution from stream properties instead of hard-coding
-        depth_vm = self.depth_stream.get_video_mode()
-        color_vm = self.color_stream.get_video_mode()
-        self.depth_h = depth_vm.resolutionY
-        self.depth_w = depth_vm.resolutionX
-        self.color_h = color_vm.resolutionY
-        self.color_w = color_vm.resolutionX
-        
-        # 3. NOW set the registration mode (after streams are active)
-        try:
-            self.dev.set_image_registration_mode(openni2.IMAGE_REGISTRATION_DEPTH_TO_COLOR)
-            self.dev.set_depth_color_sync_enabled(True)
-            print("Image registration enabled.")
-        except openni2.OpenNIError:
-            print("Warning: Registration mode not supported or already active.")
-        
-        # Internal buffers, lock, and threads
-        self.latest_depth = None
-        self.latest_color = None
-        self._lock = threading.Lock()
-        self.running = True
-        
-        self.t_depth = threading.Thread(target=self._update_depth, daemon=True)
-        self.t_color = threading.Thread(target=self._update_color, daemon=True)
-        self.t_depth.start()
-        self.t_color.start()
-
-    def _update_depth(self):
-        while self.running:
-            try:
-                frame = self.depth_stream.read_frame()
-                data = frame.get_buffer_as_uint16()
-                arr = np.frombuffer(data, dtype=np.uint16).reshape(self.depth_h, self.depth_w)
-                with self._lock:
-                    self.latest_depth = arr
-            except Exception as e:
-                print(f"Depth thread error: {e}")
-                self.running = False
-                break
-
-    def _update_color(self):
-        while self.running:
-            try:
-                frame = self.color_stream.read_frame()
-                data = frame.get_buffer_as_uint8()
-                rgb = np.frombuffer(data, dtype=np.uint8).reshape(self.color_h, self.color_w, 3)
-                bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-                with self._lock:
-                    self.latest_color = bgr
-            except Exception as e:
-                print(f"Color thread error: {e}")
-                self.running = False
-                break
-
-    def get_frames(self):
-        """ Returns copies of the latest frames if available, else (None, None) """
-        with self._lock:
-            if self.latest_depth is None or self.latest_color is None:
-                return None, None
-            return self.latest_depth.copy(), self.latest_color.copy()
-
-    def stop(self):
-        self.running = False
-        self.depth_stream.stop()
-        self.color_stream.stop()
-        openni2.unload()
 
 def draw_osd(img, label, recording, frame_count):
     """Draw on-screen display: label name, REC status, and frame count."""
@@ -130,7 +41,11 @@ def main():
     project_path = os.path.dirname(os.path.abspath(__file__))
     
     # Initialize components
-    cam = AstraCamera(project_path)
+    cam = StereoCamera(
+        calibration_file=os.path.join(project_path, 'stereo_calibration_data.xml'),
+        left_id=0,
+        right_id=1
+    )
     audio = AudioFeedback()
     vision = ObstacleDetector()
     recorder = DataRecorder(base_dir='dataset', save_fps=2.0)
